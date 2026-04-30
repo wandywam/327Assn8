@@ -1,0 +1,1 @@
+Copy .env.example into .env and fill in with your credentials to properly connect your databases

@@ -1,6 +1,70 @@
 import socket
 import psycopg2
-import pandas as pd
+import os
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
+from dotenv import load_dotenv
+
+load_dotenv() #added to keep DB connection strings private
+
+LOCAL_DB = os.environ["LOCAL_DB"]
+PEER_DB = os.environ["PEER_DB"]
+
+LOCAL_HOUSE = os.environ["LOCAL_HOUSE"]
+PEER_HOUSE = os.environ["PEER_HOUSE"]
+
+LOCAL_TABLE_NAME = os.environ["LOCAL_TABLE_NAME"]
+PEER_TABLE_NAME = os.environ["PEER_TABLE_NAME"]
+
+LOCAL_TOPIC = os.environ["LOCAL_TOPIC_SUBSTRING"]
+PEER_TOPIC = os.environ["PEER_TOPIC_SUBSTRING"]
+
+RANDY_SHARING_TIME = datetime(2026, 4, 30, 5, 3, 5, tzinfo=timezone.utc) 
+MIA_SHARING_TIME = datetime(2026, 4, 30, 5, 16, 13, tzinfo=timezone.utc) #Mia's sharing time was later
+SHARING_START = MIA_SHARING_TIME
+
+DB_METADATA = {
+    "local": {
+        "house": LOCAL_HOUSE,
+        "topic_substring" : LOCAL_TOPIC,
+        "table": LOCAL_TABLE_NAME
+    },
+    "peer": {
+        "house": PEER_HOUSE,
+        "topic_substring": PEER_TOPIC,
+        "table": PEER_TABLE_NAME
+    },
+}
+
+conn_str1 = LOCAL_DB
+conn_str2 = PEER_DB
+
+#safe connection check function
+def safe_connection(conn_str, label):
+    try:
+        conn = psycopg2.connect(conn_str)
+        print(f"Successfully connected to {label}!")
+        return conn
+    except Exception as e:
+        print(f"Failed to connect to {label}, Error: {e}")
+        return None
+
+mia_conn = safe_connection(conn_str1, "Mia's DB")
+randy_conn = safe_connection(conn_str2, "Randy's DB")
+
+#dict of connections for quick and clear access, ie. connections["randy_new"]
+connections = {
+    "randy_db" : randy_conn,
+    "mia_db" : mia_conn
+    }
+
+def connection_check(conn):
+    if conn.closed == 0:
+        print("Connected")
+    else:
+        print("Connection inactive")
+
+
 
 def get_avg_moisture(conn):
     intervals = {
@@ -106,29 +170,43 @@ def get_electricity_comparison(conn):
         f"{winner} consumed more electricity by {difference:.2f}."
     )
 
-#conn_str = "postgresql://neondb_owner:npg_GnfzMYr3ItK8@ep-odd-snow-amh8s5el-pooler.c-5.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
-conn_str = "postgresql://neondb_owner:npg_oTfcJe8Wb6xP@ep-falling-dust-anck4xzp-pooler.c-6.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
-
 #with psycopg2.connect(conn_str) as conn:
     #with conn.cursor() as cur:
         #cur.execute("SELECT version();")
         #print(cur.fetchone())
         #print(cur.execute('SELECT COUNT(*) FROM "Assn8_virtual";'))
 
-conn = psycopg2.connect(conn_str)
 
-if conn.closed == 0:
-    print("Connected")
-else:
-    print("Connection inactive")
-
-query = ('SELECT * FROM "Assn8_virtual" LIMIT 10;')
-results = pd.read_sql_query(query, conn)
-print(results)
+'''query = ('SELECT * FROM "327Assn8_virtual" LIMIT 10;')
+with connections["randy_db"].cursor() as cur:
+    cur.execute(query)
+    rows = cur.fetchall()
+    for row in rows:
+        print(row)'''
+#results = pd.read_sql_query(query, connections["randy_db"])
+#print(results)
 #conn.close()
 
 
-serverIP = "0.0.0.0" #input("Enter server IP: ")
+'''def run_query(sql):
+    conn = connections["mia_db"].cursor()
+    try:
+        with conn as cur:
+            cur.execute(sql)
+            try:
+                return cur.fetchall()
+            except Exception as e:
+                return None
+    finally:
+        conn.close()
+
+rows = run_query(f'
+                SELECT * FROM "{DB_METADATA["local"]["table"]}"
+                 where id = 1451
+')
+print(rows)'''
+
+'''serverIP = "0.0.0.0" #input("Enter server IP: ")
 serverPort = 12345 #int(input("Enter server port number: "))
 maxBytesToReceive = 1024
 
@@ -148,11 +226,11 @@ while True:
     print(decodedMessage)
     
     if "average moisture" in decodedMessage.lower():
-        response = get_avg_moisture(conn)
+        response = get_avg_moisture(connections["randy_new"])
     elif "water consumption" in decodedMessage.lower():
-        response = get_avg_water(conn)
+        response = get_avg_water(connections["randy_new"])
     elif "electricity" in decodedMessage.lower():
-        response = get_electricity_comparison(conn)
+        response = get_electricity_comparison(connections["randy_new"])
     else:
         response = "This query cannot be processed."
 
@@ -160,4 +238,27 @@ while True:
     
 
 connectionSocket.close()
-#myTCPSocket.close()
+#myTCPSocket.close()'''
+
+#function to inspect DB's
+
+def inspect(label, conn, table):
+    print("\n")
+    print(f"{label}, {table}")
+    with conn.cursor() as cur:
+        cur.execute(f'SELECT COUNT(*), MIN(time), MAX(time) FROM "{table}";')
+        count, earliest, latest = cur.fetchone()
+        print(f"Rows: {count} | Earliest: {earliest} | Latest: {latest}")
+        
+        cur.execute(f'SELECT DISTINCT topic FROM "{table}";')
+        topics = [row[0] for row in cur.fetchall()]
+        print(f"Distinct topics: {topics}")
+        
+        cur.execute(f'SELECT * FROM "{table}" LIMIT 1;')
+        sample = cur.fetchone()
+        cols = [desc[0] for desc in cur.description]
+        print(f"Sample row columns: {cols}")
+        print(f"Sample row values:  {sample}")
+
+inspect("Local - mia",  connections["mia_db"],   DB_METADATA["local"]["table"])
+inspect("Peer - randy", connections["randy_db"], DB_METADATA["peer"]["table"])
