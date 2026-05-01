@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
+
 load_dotenv() #added to keep DB connection strings private
 
 LOCAL_DB = os.environ["LOCAL_DB"]
@@ -36,8 +37,30 @@ DB_METADATA = {
     },
 }
 
-conn_str1 = LOCAL_DB
-conn_str2 = PEER_DB
+#Constants for conversions
+LITERS_PER_GALLON = 3.785
+VOLTAGE = 120
+INTERVAL_HOURS = 1 / 60
+
+def time_intervals():
+    '''time intervals for moisture and water queries'''
+    intervals = {
+        "Past hour" : timedelta(hours=1),
+        "Past week" : timedelta(weeks = 1),
+        "Past month" : timedelta(days=30)
+    }
+    return intervals
+
+
+#now_utc = datetime.now(timezone.utc) #datetime object in UTC
+#now_pst = now_utc.astimezone(ZoneInfo("America/Los_Angeles")) #Convert to pacific time
+#print(f'UTC time: {now_utc}')
+#print(f'PST time: {now_pst}')
+
+def utc_to_pst(utc_time):
+    '''convert utc -> pacific time'''
+    return utc_time.astimezone(ZoneInfo("America/Los_Angeles"))
+
 
 #safe connection check function
 def safe_connection(conn_str, label):
@@ -49,14 +72,15 @@ def safe_connection(conn_str, label):
         print(f"Failed to connect to {label}, Error: {e}")
         return None
 
-mia_conn = safe_connection(conn_str1, "Mia's DB")
-randy_conn = safe_connection(conn_str2, "Randy's DB")
 
-#dict of connections for quick and clear access, ie. connections["randy_new"]
+#Connection setup:
+local_conn = safe_connection(LOCAL_DB, f"{LOCAL_HOUSE}'s db")
+peer_conn = safe_connection(PEER_DB, f"{PEER_HOUSE}'s db")
+
 connections = {
-    "randy_db" : randy_conn,
-    "mia_db" : mia_conn
-    }
+    "local" : local_conn,
+    "peer" : peer_conn
+}
 
 def connection_check(conn):
     if conn.closed == 0:
@@ -66,11 +90,87 @@ def connection_check(conn):
 
 
 
+#Data retrieval
+def query_func(conn, table, key, start_utc, end_utc):
+    '''retrieves time, value, topic for each row with provided key AND within time interval'''
+    #converted Randy's queries into a function
+    query = f'''        
+        SELECT time, value::float, topic
+        FROM "{table}",
+        LATERAL jsonb_each_text(payload::jsonb) AS sensor(key, value)
+        WHERE key ILIKE %s
+        AND time >= %s
+        AND time < %s;'''
+    
+    with conn.cursor() as cur:
+        cur.execute(query, (f"%{key}%", start_utc, end_utc)) #key replaces %s
+        return cur.fetchall()
+    
+def filter_by_topic(rows, substring):
+    '''Retrieve from correct DB based on topic'''
+    return [r for r in rows if substring in r[2]]
+
+
+#Distrubted Queries (collect from correct dbs based on time interval!)
+def collect_data(connections, key, start_time, end_time):
+    '''Need to collect data from both DB's if start time is before sharing time, else use local DB'''
+    
+    local_meta = DB_METADATA["local"]
+    peer_meta = DB_METADATA["peer"]
+    
+    if start_time >= SHARING_START:
+        rows = query_func(connections["local"], local_meta["table"], key, start_time, end_time)
+        return rows, "from local db only bc time window is after sharing"
+    
+    else:
+        local_full = query_func(connections["local"], local_meta["table"], key, start_time, end_time)
+
+        local_house = filter_by_topic(local_full, local_meta["topic_substring"])
+        peer_post = filter_by_topic(local_full, peer_meta["topic_substring"])
+
+        peer_pre = query_func(connections["peer"], peer_meta["table"], key, start_time, SHARING_START) #end time in replaced with when sharing started
+        rows = local_house + peer_post + peer_pre
+        return rows, "from local db and peer db bc time window incluses pre-sharing period"
+    
+
+
+def compute_avg(connections, key, label, unit, unit_conversion=None):
+    now = datetime.now(timezone.utc)
+    intervals = time_intervals() #dictionairy
+
+
+    results = {}
+    for time, interval in intervals.items():
+        start_time = now - interval
+        rows, sources = collect_data(connections, key, start_time, now)
+        
+        values = []
+        for row in rows:
+            value = row[1] #value is second element
+            values.append(value)
+
+        if values:
+            avg = sum(values) / len(values) #compute avg
+            if unit_conversion:
+                avg = unit_conversion(avg)
+            results[time] = avg
+        else:
+            results[time] = None
+
+    return(
+        "Average fridge moisture:\n"
+        f'Query at {utc_to_pst(now)}\n'
+        f"Past hour: {results['Past hour']:.2f} {unit}\n"
+        f"Past week: {results['Past week']:.2f} {unit}\n"
+        f"Past month: {results['Past month']:.2f} {unit}"
+    )
+
+
+
 def get_avg_moisture(conn):
-    intervals = {
-        "past hour": "1 hour",
-        "past week": "1 week",
-        "past month": "1 month"}
+    return compute_avg(connections, key = "Moisture", label = "Avg Fridge Moisture", unit = "%")
+    '''now = datetime.now(timezone.utc)
+    intervals = time_intervals()
     
     results = {}
 
@@ -91,10 +191,11 @@ def get_avg_moisture(conn):
         f"Past hour: {results['past hour']:.2f}\n"
         f"Past week: {results['past week']:.2f}\n"
         f"Past month: {results['past month']:.2f}"
-    )
+    )'''
 
 def get_avg_water(conn):
-    intervals = {
+    return compute_avg(connections, key = "Water Consumption", label = "Avg dishwasher water consumption per cycle", unit = "gal", unit_conversion = lambda liters: liters / LITERS_PER_GALLON)
+    '''intervals = {
         "past hour": "1 hour",
         "past week": "1 week",
         "past month": "1 month"
@@ -119,10 +220,66 @@ def get_avg_water(conn):
         f"Past hour: {results['past hour']:.2f}\n"
         f"Past week: {results['past week']:.2f}\n"
         f"Past month: {results['past month']:.2f}"
-    )
+    )'''
+
+def wh_to_kwh(rows):
+    # energy per reading (Wh) = amps * volts * hours-per-reading
+    total_wh = 0
+    for (_, amps, _) in rows:
+        total_wh += amps * VOLTAGE * INTERVAL_HOURS
+    return total_wh / 1000  # Wh to kWh
 
 def get_electricity_comparison(conn):
-    query = """
+    now = datetime.now(timezone.utc)
+    start_time = now - timedelta(hours=24) #compute 24 hours ago from now
+
+    local_meta = DB_METADATA["local"]
+    peer_meta = DB_METADATA["peer"]
+
+    rows, sources = collect_data(connections, "Ammeter", start_time, now)
+
+    local_rows = filter_by_topic(rows, local_meta["topic_substring"])
+    peer_rows = filter_by_topic(rows, peer_meta["topic_substring"])
+
+    #convert Wh to kWh
+    local_kwh = wh_to_kwh(local_rows)
+    peer_kwh = wh_to_kwh(peer_rows)
+
+    output = [
+        f"Electricity usage in the past 24 hours"
+        f"Query at {utc_to_pst(now)}):",
+        f"{local_meta['house']}'s House: {local_kwh:.2f} kWh ",
+        f"{peer_meta['house']}'s House:  {peer_kwh:.2f} kWh ",
+        f"Data {sources}",
+    ]
+
+    #choosing winner
+    if local_kwh > peer_kwh:
+        diff = local_kwh - peer_kwh
+        output.append(
+            f"{local_meta['house']}'s House consumed more, by {diff:.2f} kWh."
+        )
+    elif peer_kwh > local_kwh:
+        diff = peer_kwh - local_kwh
+        output.append(
+            f"  → {peer_meta['house']}'s House consumed more, "
+            f"by {diff:.2f} kWh."
+        )
+    else:
+        output.append("  → Both houses consumed the same amount.")
+
+    return "\n".join(output)
+
+
+if __name__ == "__main__":
+    print(get_avg_moisture(connections))
+    print()
+    print(get_avg_water(connections))
+    print()
+    print(get_electricity_comparison(connections))
+    print()
+
+    '''query = """
     SELECT topic, SUM(value::float)
     FROM "Assn8_virtual",
     LATERAL json_each_text(payload::json) AS sensor(key, value)
@@ -168,43 +325,16 @@ def get_electricity_comparison(conn):
         f"Randy's House: {randy_usage:.2f}\n"
         f"Mia's House: {mia_usage:.2f}\n"
         f"{winner} consumed more electricity by {difference:.2f}."
-    )
+    )'''
 
 #with psycopg2.connect(conn_str) as conn:
     #with conn.cursor() as cur:
         #cur.execute("SELECT version();")
         #print(cur.fetchone())
-        #print(cur.execute('SELECT COUNT(*) FROM "Assn8_virtual";'))
+        #print(cur.execute('SELECT COUNT(*) FROM "Assn8_virtual";'))'''
 
 
-'''query = ('SELECT * FROM "327Assn8_virtual" LIMIT 10;')
-with connections["randy_db"].cursor() as cur:
-    cur.execute(query)
-    rows = cur.fetchall()
-    for row in rows:
-        print(row)'''
-#results = pd.read_sql_query(query, connections["randy_db"])
-#print(results)
-#conn.close()
-
-
-'''def run_query(sql):
-    conn = connections["mia_db"].cursor()
-    try:
-        with conn as cur:
-            cur.execute(sql)
-            try:
-                return cur.fetchall()
-            except Exception as e:
-                return None
-    finally:
-        conn.close()
-
-rows = run_query(f'
-                SELECT * FROM "{DB_METADATA["local"]["table"]}"
-                 where id = 1451
-')
-print(rows)'''
+#TCP Server
 
 '''serverIP = "0.0.0.0" #input("Enter server IP: ")
 serverPort = 12345 #int(input("Enter server port number: "))
@@ -239,26 +369,3 @@ while True:
 
 connectionSocket.close()
 #myTCPSocket.close()'''
-
-#function to inspect DB's
-
-def inspect(label, conn, table):
-    print("\n")
-    print(f"{label}, {table}")
-    with conn.cursor() as cur:
-        cur.execute(f'SELECT COUNT(*), MIN(time), MAX(time) FROM "{table}";')
-        count, earliest, latest = cur.fetchone()
-        print(f"Rows: {count} | Earliest: {earliest} | Latest: {latest}")
-        
-        cur.execute(f'SELECT DISTINCT topic FROM "{table}";')
-        topics = [row[0] for row in cur.fetchall()]
-        print(f"Distinct topics: {topics}")
-        
-        cur.execute(f'SELECT * FROM "{table}" LIMIT 1;')
-        sample = cur.fetchone()
-        cols = [desc[0] for desc in cur.description]
-        print(f"Sample row columns: {cols}")
-        print(f"Sample row values:  {sample}")
-
-inspect("Local - mia",  connections["mia_db"],   DB_METADATA["local"]["table"])
-inspect("Peer - randy", connections["randy_db"], DB_METADATA["peer"]["table"])
