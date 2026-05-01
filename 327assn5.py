@@ -16,13 +16,13 @@ myTCPsocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 myTCPsocket.connect((serverIP, serverPort))
 print('Connected.')
 
-print("Allowed queries: ")
+print("\nAllowed queries: ")
 for i in QUERIES:
     print("-", i)
 
 
 while True:
-    someData = input("Enter query or 'quit': ")
+    someData = input("\nEnter query or 'quit': ")
 
     if someData.lower() == 'quit':
         break
@@ -33,6 +33,6 @@ while True:
 
     myTCPsocket.send(someData.encode('utf-8'))
     serverResponse = myTCPsocket.recv(maxBytesToReceive)
-    print('Response:', serverResponse.decode('utf-8'))
+    print('\nResponse:', serverResponse.decode('utf-8'))
     
 myTCPsocket.close()

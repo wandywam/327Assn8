@@ -130,7 +130,7 @@ def collect_data(connections, key, start_time, end_time):
 
         peer_pre = query_func(connections["peer"], peer_meta["table"], key, start_time, SHARING_START) #end time in replaced with when sharing started
         rows = local_house + peer_post + peer_pre
-        return rows, "from local db and peer db bc time window incluses pre-sharing period"
+        return rows, "from local db and peer db bc time window includes pre-sharing period"
     
 
 
@@ -158,7 +158,7 @@ def compute_avg(connections, key, label, unit, unit_conversion=None):
             results[time] = None
 
     return(
-        "Average fridge moisture:\n"
+        f"{label}:\n"
         f'Query at {utc_to_pst(now)}\n'
         f"Past hour: {results['Past hour']:.2f} {unit}\n"
         f"Past week: {results['Past week']:.2f} {unit}\n"
@@ -167,60 +167,12 @@ def compute_avg(connections, key, label, unit, unit_conversion=None):
 
 
 
-def get_avg_moisture(conn):
+def get_avg_moisture():
     return compute_avg(connections, key = "Moisture", label = "Avg Fridge Moisture", unit = "%")
-    '''now = datetime.now(timezone.utc)
-    intervals = time_intervals()
-    
-    results = {}
 
-    with conn.cursor() as cur:
-        for label, interval in intervals.items():
-            query = f"""
-            SELECT AVG(value::float)
-            FROM "Assn8_virtual",
-            LATERAL json_each_text(payload::json) AS sensor(key, value)
-            WHERE key ILIKE '%Moisture%'
-            AND time >= NOW() - INTERVAL '{interval}';
-            """
-            cur.execute(query)
-            results[label] = cur.fetchone()[0]
-
-    return(
-        "Average fridge moisture:\n"
-        f"Past hour: {results['past hour']:.2f}\n"
-        f"Past week: {results['past week']:.2f}\n"
-        f"Past month: {results['past month']:.2f}"
-    )'''
-
-def get_avg_water(conn):
+def get_avg_water():
     return compute_avg(connections, key = "Water Consumption", label = "Avg dishwasher water consumption per cycle", unit = "gal", unit_conversion = lambda liters: liters / LITERS_PER_GALLON)
-    '''intervals = {
-        "past hour": "1 hour",
-        "past week": "1 week",
-        "past month": "1 month"
-    }
 
-    results = {}
-
-    with conn.cursor() as cur:
-        for label, interval in intervals.items():
-            query = f"""
-            SELECT AVG(value::float)
-            FROM "Assn8_virtual",
-            LATERAL json_each_text(payload::json) AS sensor(key, value)
-            WHERE key ILIKE '%Water Consumption%'
-            AND time >= NOW() - INTERVAL '{interval}';
-            """
-            cur.execute(query)
-            results[label] = cur.fetchone()[0]
-
-    return (
-        "Average dishwasher water consumption:\n"
-        f"Past hour: {results['past hour']:.2f}\n"
-        f"Past week: {results['past week']:.2f}\n"
-        f"Past month: {results['past month']:.2f}"
-    )'''
 
 def wh_to_kwh(rows):
     # energy per reading (Wh) = amps * volts * hours-per-reading
@@ -229,7 +181,7 @@ def wh_to_kwh(rows):
         total_wh += amps * VOLTAGE * INTERVAL_HOURS
     return total_wh / 1000  # Wh to kWh
 
-def get_electricity_comparison(conn):
+def get_electricity_comparison():
     now = datetime.now(timezone.utc)
     start_time = now - timedelta(hours=24) #compute 24 hours ago from now
 
@@ -246,8 +198,8 @@ def get_electricity_comparison(conn):
     peer_kwh = wh_to_kwh(peer_rows)
 
     output = [
-        f"Electricity usage in the past 24 hours"
-        f"Query at {utc_to_pst(now)}):",
+        f"Electricity usage in the past 24 hours\n"
+        f"Query at {utc_to_pst(now)}:",
         f"{local_meta['house']}'s House: {local_kwh:.2f} kWh ",
         f"{peer_meta['house']}'s House:  {peer_kwh:.2f} kWh ",
         f"Data {sources}",
@@ -271,80 +223,21 @@ def get_electricity_comparison(conn):
     return "\n".join(output)
 
 
-if __name__ == "__main__":
-    print(get_avg_moisture(connections))
-    print()
-    print(get_avg_water(connections))
-    print()
-    print(get_electricity_comparison(connections))
-    print()
-
-    '''query = """
-    SELECT topic, SUM(value::float)
-    FROM "Assn8_virtual",
-    LATERAL json_each_text(payload::json) AS sensor(key, value)
-    WHERE key ILIKE '%Ammeter%'
-    AND time >= NOW() - INTERVAL '24 hours'
-    GROUP BY topic;
-    """
-
-    usage = {}
-
-    with conn.cursor() as cur:
-        cur.execute(query)
-        rows = cur.fetchall()
-
-    for topic, total in rows:
-        if "randylam" in topic:
-            usage["Randy's House"] = total
-        elif "mia" in topic:
-            usage["Mia's House"] = total
-
-    if len(usage) < 2:
-        return "Not enough electricity data from both houses yet."
-
-    randy_usage = usage.get("Randy's House", 0)
-    mia_usage = usage.get("Mia's House", 0)
-
-    if randy_usage > mia_usage:
-        winner = "Randy's House"
-        difference = randy_usage - mia_usage
-    elif mia_usage > randy_usage:
-        winner = "Mia's House"
-        difference = mia_usage - randy_usage
-    else:
-        return (
-            "Electricity usage in the past 24 hours:\n"
-            f"Randy's House: {randy_usage:.2f}\n"
-            f"Mia's House: {mia_usage:.2f}\n"
-            "Both houses consumed the same amount."
-        )
-
-    return (
-        "Electricity usage in the past 24 hours:\n"
-        f"Randy's House: {randy_usage:.2f}\n"
-        f"Mia's House: {mia_usage:.2f}\n"
-        f"{winner} consumed more electricity by {difference:.2f}."
-    )'''
-
-#with psycopg2.connect(conn_str) as conn:
-    #with conn.cursor() as cur:
-        #cur.execute("SELECT version();")
-        #print(cur.fetchone())
-        #print(cur.execute('SELECT COUNT(*) FROM "Assn8_virtual";'))'''
-
-
 #TCP Server
 
-'''serverIP = "0.0.0.0" #input("Enter server IP: ")
+serverIP = "0.0.0.0" #input("Enter server IP: ")
 serverPort = 12345 #int(input("Enter server port number: "))
 maxBytesToReceive = 1024
 
 myTCPSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+myTCPSocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 myTCPSocket.bind((serverIP, serverPort))
 myTCPSocket.listen(1)
 
+print("-- Server is listening on Port 12345 --")
+
 connectionSocket, addr = myTCPSocket.accept()
+print(f"Connected to client {addr}")
 
 while True:
     clientMessage = connectionSocket.recv(maxBytesToReceive)
@@ -353,14 +246,14 @@ while True:
         break
 
     decodedMessage = clientMessage.decode("utf-8")
-    print(decodedMessage)
+    print("Client query: ", decodedMessage)
     
     if "average moisture" in decodedMessage.lower():
-        response = get_avg_moisture(connections["randy_new"])
+        response = get_avg_moisture()
     elif "water consumption" in decodedMessage.lower():
-        response = get_avg_water(connections["randy_new"])
+        response = get_avg_water()
     elif "electricity" in decodedMessage.lower():
-        response = get_electricity_comparison(connections["randy_new"])
+        response = get_electricity_comparison()
     else:
         response = "This query cannot be processed."
 
@@ -368,4 +261,7 @@ while True:
     
 
 connectionSocket.close()
-#myTCPSocket.close()'''
+myTCPSocket.close()
+
+local_conn.close()
+peer_conn.close()
